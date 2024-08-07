@@ -1,0 +1,285 @@
+---
+tests/tests_all.txt
+---
+---
+tests/test_filt_retriever.py
+import unittest
+from unittest.mock import Mock, patch
+from goldenverba.components.retriever.FiltRetriever import FiltRetriever
+
+class TestFiltRetriever(unittest.TestCase):
+    def setUp(self):
+        self.retriever = FiltRetriever()
+
+    @patch('goldenverba.components.retriever.FiltRetriever.es')
+    @patch('goldenverba.components.retriever.FiltRetriever.filter_results')
+    def test_retrieve(self, mock_filter, mock_es):
+        # ƒ‚ƒbƒN‚Ìİ’è
+        mock_es_response = Mock()
+        mock_es_response.body = {
+            'hits': {
+                'hits': [
+                    {'_source': {'content': 'Test content 1', 'metadata': {'type': 'A'}}},
+                    {'_source': {'content': 'Test content 2', 'metadata': {'type': 'B'}}},
+                    {'_source': {'content': 'Test content 3', 'metadata': {'type': 'A'}}}
+                ]
+            }
+        }
+        mock_es.search.return_value = mock_es_response
+
+        mock_filter.return_value = [
+            {'content': 'Test content 1', 'metadata': {'type': 'A'}},
+            {'content': 'Test content 3', 'metadata': {'type': 'A'}}
+        ]
+
+        # ƒeƒXƒg‚ÌÀs
+        result = self.retriever.retrieve("Test query")
+
+        # ƒAƒT[ƒVƒ‡ƒ“
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]['content'], 'Test content 1')
+        self.assertEqual(result[1]['content'], 'Test content 3')
+        mock_es.search.assert_called_once()
+        mock_filter.assert_called_once()
+
+    def test_init_with_custom_params(self):
+        custom_retriever = FiltRetriever(index_name="custom_index", size=5, filter_criteria={'type': 'A'})
+        self.assertEqual(custom_retriever.index_name, "custom_index")
+        self.assertEqual(custom_retriever.size, 5)
+        self.assertEqual(custom_retriever.filter_criteria, {'type': 'A'})
+
+    def test_filter_results(self):
+        results = [
+            {'content': 'Test content 1', 'metadata': {'type': 'A'}},
+            {'content': 'Test content 2', 'metadata': {'type': 'B'}},
+            {'content': 'Test content 3', 'metadata': {'type': 'A'}}
+        ]
+        filtered = self.retriever.filter_results(results, {'type': 'A'})
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(filtered[0]['content'], 'Test content 1')
+        self.assertEqual(filtered[1]['content'], 'Test content 3')
+
+if __name__ == '__main__':
+    unittest.main()---
+---
+tests/test_rerank_retriever.py
+import unittest
+from unittest.mock import Mock, patch
+from goldenverba.components.retriever.RerankRetriever import RerankRetriever
+
+class TestRerankRetriever(unittest.TestCase):
+    def setUp(self):
+        self.retriever = RerankRetriever()
+
+    @patch('goldenverba.components.retriever.RerankRetriever.es')
+    @patch('goldenverba.components.retriever.RerankRetriever.rerank')
+    def test_retrieve(self, mock_rerank, mock_es):
+        # ƒ‚ƒbƒN‚Ìİ’è
+        mock_es_response = Mock()
+        mock_es_response.body = {
+            'hits': {
+                'hits': [
+                    {'_source': {'content': 'Test content 1'}},
+                    {'_source': {'content': 'Test content 2'}}
+                ]
+            }
+        }
+        mock_es.search.return_value = mock_es_response
+
+        mock_rerank.return_value = [
+            {'content': 'Test content 2', 'score': 0.9},
+            {'content': 'Test content 1', 'score': 0.7}
+        ]
+
+        # ƒeƒXƒg‚ÌÀs
+        result = self.retriever.retrieve("Test query")
+
+        # ƒAƒT[ƒVƒ‡ƒ“
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], 'Test content 2')
+        self.assertEqual(result[1], 'Test content 1')
+        mock_es.search.assert_called_once()
+        mock_rerank.assert_called_once()
+
+    def test_init_with_custom_params(self):
+        custom_retriever = RerankRetriever(index_name="custom_index", size=5, rerank_size=3)
+        self.assertEqual(custom_retriever.index_name, "custom_index")
+        self.assertEqual(custom_retriever.size, 5)
+        self.assertEqual(custom_retriever.rerank_size, 3)
+
+if __name__ == '__main__':
+    unittest.main()---
+---
+tests/test_simple_retriever.py
+import unittest
+from unittest.mock import Mock, patch
+from goldenverba.components.retriever.SimpleRetriever import SimpleRetriever
+
+class TestSimpleRetriever(unittest.TestCase):
+    def setUp(self):
+        self.retriever = SimpleRetriever()
+
+    @patch('goldenverba.components.retriever.SimpleRetriever.es')
+    def test_retrieve(self, mock_es):
+        # ƒ‚ƒbƒN‚Ìİ’è
+        mock_response = Mock()
+        mock_response.body = {
+            'hits': {
+                'hits': [
+                    {'_source': {'content': 'Test content 1'}},
+                    {'_source': {'content': 'Test content 2'}}
+                ]
+            }
+        }
+        mock_es.search.return_value = mock_response
+
+        # ƒeƒXƒg‚ÌÀs
+        result = self.retriever.retrieve("Test query")
+
+        # ƒAƒT[ƒVƒ‡ƒ“
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], 'Test content 1')
+        self.assertEqual(result[1], 'Test content 2')
+        mock_es.search.assert_called_once()
+
+    def test_init_with_custom_params(self):
+        custom_retriever = SimpleRetriever(index_name="custom_index", size=5)
+        self.assertEqual(custom_retriever.index_name, "custom_index")
+        self.assertEqual(custom_retriever.size, 5)
+
+if __name__ == '__main__':
+    unittest.main()---
+---
+tests/test_tsuzumiv1_generator.py
+# -*- coding: utf-8 -*-
+import unittest
+from unittest.mock import Mock, patch
+from goldenverba.components.generation.TsuzumiV1Generator import TsuzumiV1Generator
+
+
+class TestTsuzumiV1Generator(unittest.TestCase):
+    def setUp(self):
+        self.generator = TsuzumiV1Generator()
+
+    @patch("goldenverba.components.generation.TsuzumiV1Generator.requests")
+    def test_generate(self, mock_requests):
+        # ï¿½ï¿½ï¿½bï¿½Nï¿½Ìİ’ï¿½
+        mock_response = Mock()
+        mock_response.json.return_value = {"choices": [{"text": "Generated text from TsuzumiV1"}]}
+        mock_requests.post.return_value = mock_response
+
+        # ï¿½eï¿½Xï¿½gï¿½Ìï¿½ï¿½s
+        result = self.generator.generate("Test prompt")
+
+        # ï¿½Aï¿½Tï¿½[ï¿½Vï¿½ï¿½ï¿½ï¿½
+        self.assertEqual(result, "Generated text from TsuzumiV1")
+        mock_requests.post.assert_called_once()
+
+    def test_init_with_custom_params(self):
+        custom_generator = TsuzumiV1Generator(model="custom_model", max_tokens=100, temperature=0.8)
+        self.assertEqual(custom_generator.model, "custom_model")
+        self.assertEqual(custom_generator.max_tokens, 100)
+        self.assertEqual(custom_generator.temperature, 0.8)
+
+    @patch("goldenverba.components.generation.TsuzumiV1Generator.requests")
+    def test_generate_with_context(self, mock_requests):
+        # ï¿½ï¿½ï¿½bï¿½Nï¿½Ìİ’ï¿½
+        mock_response = Mock()
+        mock_response.json.return_value = {"choices": [{"text": "Generated text with context"}]}
+        mock_requests.post.return_value = mock_response
+
+        # ï¿½eï¿½Xï¿½gï¿½Ìï¿½ï¿½s
+        context = ["Context 1", "Context 2"]
+        result = self.generator.generate("Test prompt", context=context)
+
+        # ï¿½Aï¿½Tï¿½[ï¿½Vï¿½ï¿½ï¿½ï¿½
+        self.assertEqual(result, "Generated text with context")
+        mock_requests.post.assert_called_once()
+        # ï¿½Rï¿½ï¿½ï¿½eï¿½Lï¿½Xï¿½gï¿½ï¿½ï¿½Kï¿½Ø‚Égï¿½pï¿½ï¿½ï¿½ê‚½ï¿½ï¿½ï¿½Æ‚ï¿½ï¿½mï¿½Fï¿½ï¿½ï¿½é‚½ï¿½ß‚Ì‚ï¿½ï¿½Ú×‚ÈƒAï¿½Tï¿½[ï¿½Vï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Kï¿½vï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü‚ï¿½ï¿½ï¿½
+
+
+if __name__ == "__main__":
+    unittest.main()
+---
+---
+tests/test_tsuzumi_generator.py
+import unittest
+from unittest.mock import Mock, patch
+from goldenverba.components.generation.TsuzumiGenerator import TsuzumiGenerator
+
+class TestTsuzumiGenerator(unittest.TestCase):
+    def setUp(self):
+        self.generator = TsuzumiGenerator()
+
+    @patch('goldenverba.components.generation.TsuzumiGenerator.requests')
+    def test_generate(self, mock_requests):
+        # ƒ‚ƒbƒN‚Ìİ’è
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "choices": [
+                {
+                    "text": "Generated text from Tsuzumi"
+                }
+            ]
+        }
+        mock_requests.post.return_value = mock_response
+
+        # ƒeƒXƒg‚ÌÀs
+        result = self.generator.generate("Test prompt")
+
+        # ƒAƒT[ƒVƒ‡ƒ“
+        self.assertEqual(result, "Generated text from Tsuzumi")
+        mock_requests.post.assert_called_once()
+
+    def test_init_with_custom_params(self):
+        custom_generator = TsuzumiGenerator(model="custom_model", max_tokens=100, temperature=0.8)
+        self.assertEqual(custom_generator.model, "custom_model")
+        self.assertEqual(custom_generator.max_tokens, 100)
+        self.assertEqual(custom_generator.temperature, 0.8)
+
+    @patch('goldenverba.components.generation.TsuzumiGenerator.requests')
+    def test_generate_with_context(self, mock_requests):
+        # ƒ‚ƒbƒN‚Ìİ’è
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "choices": [
+                {
+                    "text": "Generated text with context"
+                }
+            ]
+        }
+        mock_requests.post.return_value = mock_response
+
+        # ƒeƒXƒg‚ÌÀs
+        context = ["Context 1", "Context 2"]
+        result = self.generator.generate("Test prompt", context=context)
+
+        # ƒAƒT[ƒVƒ‡ƒ“
+        self.assertEqual(result, "Generated text with context")
+        mock_requests.post.assert_called_once()
+        # ƒRƒ“ƒeƒLƒXƒg‚ª“KØ‚Ég—p‚³‚ê‚½‚±‚Æ‚ğŠm”F‚·‚é‚½‚ß‚Ì‚æ‚èÚ×‚ÈƒAƒT[ƒVƒ‡ƒ“‚ª•K—v‚©‚à‚µ‚ê‚Ü‚¹‚ñ
+
+    @patch('goldenverba.components.generation.TsuzumiGenerator.requests')
+    def test_generate_with_options(self, mock_requests):
+        # ƒ‚ƒbƒN‚Ìİ’è
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "choices": [
+                {
+                    "text": "Generated text with options"
+                }
+            ]
+        }
+        mock_requests.post.return_value = mock_response
+
+        # ƒeƒXƒg‚ÌÀs
+        options = {"top_p": 0.9, "frequency_penalty": 0.1}
+        result = self.generator.generate("Test prompt", options=options)
+
+        # ƒAƒT[ƒVƒ‡ƒ“
+        self.assertEqual(result, "Generated text with options")
+        mock_requests.post.assert_called_once()
+        # ƒIƒvƒVƒ‡ƒ“‚ª“KØ‚Ég—p‚³‚ê‚½‚±‚Æ‚ğŠm”F‚·‚é‚½‚ß‚Ì‚æ‚èÚ×‚ÈƒAƒT[ƒVƒ‡ƒ“‚ª•K—v‚©‚à‚µ‚ê‚Ü‚¹‚ñ
+
+if __name__ == '__main__':
+    unittest.main()---
