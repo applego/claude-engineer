@@ -17,6 +17,7 @@ import asyncio
 import aiohttp
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
+import difflib
 
 
 async def get_user_input(prompt="You: "):
@@ -108,11 +109,7 @@ CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
 MAX_CONTINUATION_ITERATIONS = 25
 MAX_CONTEXT_TOKENS = 200000  # Reduced to 200k tokens for context window
 
-# Models
-# Models that maintain context memory across interactions
-MAINMODEL = "claude-3-5-sonnet-20240620"  # Maintains conversation history and file contents
-
-# Models that don't maintain context (memory is reset after each call)
+MAINMODEL = "claude-3-5-sonnet-20240620"
 TOOLCHECKERMODEL = "claude-3-5-sonnet-20240620"
 CODEEDITORMODEL = "claude-3-5-sonnet-20240620"
 CODEEXECUTIONMODEL = "claude-3-5-sonnet-20240620"
@@ -132,29 +129,28 @@ You are Claude, an AI assistant powered by Anthropic's Claude-3.5-Sonnet model, 
 
 Available tools and their optimal use cases:
 
-1. create_folder: Create new directories in the project structure.
-2. create_file: Generate new files with specified content. Strive to make the file as complete and useful as possible.
-3. edit_and_apply: Examine and modify existing files by instructing a separate AI coding agent. You are responsible for providing clear, detailed instructions to this agent. When using this tool:
+1. create_folders: Create new directories in the project structure.
+2. create_files: Generate one or more new files with specified content. Strive to make the files as complete and useful as possible.
+3. edit_and_apply_multiple: Examine and modify one or more existing files by instructing a separate AI coding agent. You are responsible for providing clear, detailed instructions for each file. When using this tool:
    - Provide comprehensive context about the project, including recent changes, new variables or functions, and how files are interconnected.
-   - Clearly state the specific changes or improvements needed, explaining the reasoning behind each modification.
+   - Clearly state the specific changes or improvements needed for each file, explaining the reasoning behind each modification.
    - Include ALL the snippets of code to change, along with the desired modifications.
    - Specify coding standards, naming conventions, or architectural patterns to be followed.
    - Anticipate potential issues or conflicts that might arise from the changes and provide guidance on how to handle them.
-4. execute_code: Run Python code exclusively in the 'code_execution_env' virtual environment and analyze its output. Use this when you need to test code functionality or diagnose issues. Remember that all code execution happens in this isolated environment. This tool now returns a process ID for long-running processes.
+4. execute_code: Run Python code exclusively in the 'code_execution_env' virtual environment and analyze its output. Use this when you need to test code functionality or diagnose issues. Remember that all code execution happens in this isolated environment. This tool returns a process ID for long-running processes.
 5. stop_process: Stop a running process by its ID. Use this when you need to terminate a long-running process started by the execute_code tool.
-6. read_file: Read the contents of an existing file.
-7. read_multiple_files: Read the contents of multiple existing files at once. Use this when you need to examine or work with multiple files simultaneously.
-8. list_files: List all files and directories in a specified folder.
-9. tavily_search: Perform a web search using the Tavily API for up-to-date information.
+6. read_multiple_files: Read the contents of one or more existing files at once. This tool now handles both single and multiple file reads. Use this when you need to examine or work with file contents.
+7. list_files: List all files and directories in a specified folder.
+8. tavily_search: Perform a web search using the Tavily API for up-to-date information.
 
 Tool Usage Guidelines:
 - Always use the most appropriate tool for the task at hand.
-- Provide detailed and clear instructions when using tools, especially for edit_and_apply.
+- Provide detailed and clear instructions when using tools, especially for edit_and_apply_multiple.
 - After making changes, always review the output to ensure accuracy and alignment with intentions.
 - Use execute_code to run and test code within the 'code_execution_env' virtual environment, then analyze the results.
 - For long-running processes, use the process ID returned by execute_code to stop them later if needed.
 - Proactively use tavily_search when you need up-to-date information or additional context.
-- When working with multiple files, consider using read_multiple_files for efficiency.
+- When working with files, use read_multiple_files for both single and multiple file reads.
 
 Error Handling and Recovery:
 - If a tool operation fails, carefully analyze the error message and attempt to resolve the issue.
@@ -197,7 +193,7 @@ You are currently in automode. Follow these guidelines:
 
 4. Tool Usage:
    - Leverage all available tools to accomplish your goals efficiently.
-   - Prefer edit_and_apply for file modifications, applying changes in chunks for large edits.
+   - Prefer edit_and_apply_multiple for file modifications, applying changes in chunks for large edits.
    - Use tavily_search proactively for up-to-date information.
 
 5. Error Handling:
@@ -257,7 +253,7 @@ def create_folder(path):
 def create_file(path, content=""):
     global file_contents
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "w") as f:
             f.write(content)
         file_contents[path] = content
         return f"File created and added to system prompt: {path}"
@@ -332,12 +328,12 @@ async def generate_edit_instructions(
         If no changes are needed, return an empty list.
         """
 
-        # Make the API call to CODEEDITORMODEL (context is not maintained except for code_editor_memory)
-        response = client.messages.create(
+        response = client.beta.prompt_caching.messages.create(
             model=CODEEDITORMODEL,
             max_tokens=8000,
-            system=system_prompt,
-            extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
+            system=[
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+            ],
             messages=[
                 {
                     "role": "user",
@@ -365,7 +361,17 @@ async def generate_edit_instructions(
         return []  # Return empty list if any exception occurs
 
 
-def parse_search_replace_blocks(response_text):
+def parse_search_replace_blocks(response_text, use_fuzzy=USE_FUZZY_SEARCH):
+    """
+    Parse the response text for SEARCH/REPLACE blocks.
+
+    Args:
+    response_text (str): The text containing SEARCH/REPLACE blocks.
+    use_fuzzy (bool): Whether to use fuzzy matching for search blocks.
+
+    Returns:
+    list: A list of dictionaries, each containing 'search', 'replace', and 'similarity' keys.
+    """
     blocks = []
     pattern = r"<SEARCH>\n(.*?)\n</SEARCH>\n<REPLACE>\n(.*?)\n</REPLACE>"
     matches = re.findall(pattern, response_text, re.DOTALL)
@@ -376,12 +382,12 @@ def parse_search_replace_blocks(response_text):
     return json.dumps(blocks)  # Keep returning JSON string
 
 
-async def edit_and_apply(path, instructions, project_context, is_automode=False, max_retries=3):
+async def edit_and_apply_multiple(files, project_context, is_automode=False, max_retries=3):
     global file_contents
     try:
         original_content = file_contents.get(path, "")
         if not original_content:
-            with open(path, "r", encoding="utf-8") as file:
+            with open(path, "r") as file:
                 original_content = file.read()
             file_contents[path] = original_content
 
@@ -451,6 +457,7 @@ async def apply_edits(file_path, edit_instructions, original_content):
     edited_content = original_content
     total_edits = len(edit_instructions)
     failed_edits = []
+    console_output = []
 
     with Progress(
         SpinnerColumn(),
@@ -507,9 +514,15 @@ async def apply_edits(file_path, edit_instructions, original_content):
         # Write the changes to the file
         with open(file_path, "w", encoding="utf-8") as file:
             file.write(edited_content)
-        console.print(Panel(f"Changes have been written to {file_path}", style="green"))
+        message = f"Changes have been written to {file_path}"
+        console_output.append(message)
+        console.print(Panel(message, style="green"))
 
-    return edited_content, changes_made, "\n".join(failed_edits)
+    return edited_content, changes_made, "\n".join(failed_edits), "\n".join(console_output)
+
+
+def highlight_diff(diff_text):
+    return Syntax(diff_text, "diff", theme="monokai", line_numbers=True)
 
 
 def generate_diff(original, new, path):
@@ -577,7 +590,7 @@ async def execute_code(code, timeout=10):
 def read_file(path):
     global file_contents
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r") as f:
             content = f.read()
         file_contents[path] = content
         return f"File '{path}' has been read and stored in the system prompt."
@@ -588,6 +601,11 @@ def read_file(path):
 def read_multiple_files(paths):
     global file_contents
     results = []
+
+    # Convert single path to list if necessary
+    if isinstance(paths, str):
+        paths = [paths]
+
     for path in paths:
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -631,8 +649,8 @@ def stop_process(process_id):
 
 tools = [
     {
-        "name": "create_folder",
-        "description": "Create a new folder at the specified path. This tool should be used when you need to create a new directory in the project structure. It will create all necessary parent directories if they don't exist. The tool will return a success message if the folder is created or already exists, and an error message if there's a problem creating the folder.",
+        "name": "create_folders",
+        "description": "Create new folders at the specified paths. This tool should be used when you need to create one or more directories in the project structure. It will create all necessary parent directories if they don't exist.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -645,8 +663,8 @@ tools = [
         },
     },
     {
-        "name": "create_file",
-        "description": "Create a new file at the specified path with the given content. This tool should be used when you need to create a new file in the project structure. It will create all necessary parent directories if they don't exist. The tool will return a success message if the file is created, and an error message if there's a problem creating the file or if the file already exists. The content should be as complete and useful as possible, including necessary imports, function definitions, and comments.",
+        "name": "create_files",
+        "description": "Create one or more new files with the given contents. This tool should be used when you need to create files in the project structure. It will create all necessary parent directories if they don't exist.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -663,8 +681,8 @@ tools = [
         },
     },
     {
-        "name": "edit_and_apply",
-        "description": "Apply AI-powered improvements to a file based on specific instructions and detailed project context. This function reads the file, processes it in batches using AI with conversation history and comprehensive code-related project context. It generates a diff and allows the user to confirm changes before applying them. The goal is to maintain consistency and prevent breaking connections between files. This tool should be used for complex code modifications that require understanding of the broader project context.",
+        "name": "edit_and_apply_multiple",
+        "description": "Apply AI-powered improvements to multiple files based on specific instructions and detailed project context.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -713,8 +731,8 @@ tools = [
         },
     },
     {
-        "name": "read_file",
-        "description": "Read the contents of a file at the specified path. This tool should be used when you need to examine the contents of an existing file. It will return the entire contents of the file as a string. If the file doesn't exist or can't be read, an appropriate error message will be returned.",
+        "name": "read_multiple_files",
+        "description": "Read the contents of one or more existing files at once. This tool now handles both single and multiple file reads. Use this when you need to examine or work with file contents.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -777,6 +795,7 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
     try:
         result = None
         is_error = False
+        console_output = None
 
         if tool_name == "create_folder":
             result = create_folder(tool_input["path"])
@@ -792,7 +811,8 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
         elif tool_name == "read_file":
             result = read_file(tool_input["path"])
         elif tool_name == "read_multiple_files":
-            result = read_multiple_files(tool_input["paths"])
+            paths = tool_input.get("paths", tool_input.get("path"))
+            result = read_multiple_files(paths)
         elif tool_name == "list_files":
             result = list_files(tool_input.get("path", "."))
         elif tool_name == "tavily_search":
@@ -863,10 +883,12 @@ async def send_to_ai_for_executing(code, execution_result):
         IMPORTANT: PROVIDE ONLY YOUR ANALYSIS AND OBSERVATIONS. DO NOT INCLUDE ANY PREFACING STATEMENTS OR EXPLANATIONS OF YOUR ROLE.
         """
 
-        response = client.messages.create(
+        response = client.beta.prompt_caching.messages.create(
             model=CODEEXECUTIONMODEL,
             max_tokens=2000,
-            system=system_prompt,
+            system=[
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+            ],
             messages=[
                 {
                     "role": "user",
@@ -924,7 +946,6 @@ async def chat_with_claude(
 ):
     global conversation_history, automode, main_model_tokens
 
-    # This function uses MAINMODEL, which maintains context across calls
     current_conversation = []
 
     if image_path:
@@ -996,12 +1017,18 @@ async def chat_with_claude(
     messages = filtered_conversation_history + current_conversation
 
     try:
-        # MAINMODEL call, which maintains context
-        response = client.messages.create(
+        # MAINMODEL call with prompt caching
+        response = client.beta.prompt_caching.messages.create(
             model=MAINMODEL,
             max_tokens=8000,
-            system=update_system_prompt(current_iteration, max_iterations),
-            extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"},
+            system=[
+                {
+                    "type": "text",
+                    "text": update_system_prompt(current_iteration, max_iterations),
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": json.dumps(tools), "cache_control": {"type": "ephemeral"}},
+            ],
             messages=messages,
             tools=tools,
             tool_choice={"type": "auto"},
@@ -1207,6 +1234,8 @@ def display_token_usage():
     table.add_column("Model", style="cyan")
     table.add_column("Input", style="magenta")
     table.add_column("Output", style="magenta")
+    table.add_column("Cache Write", style="blue")
+    table.add_column("Cache Read", style="blue")
     table.add_column("Total", style="green")
     table.add_column(f"% of Context ({MAX_CONTEXT_TOKENS:,})", style="yellow")
     table.add_column("Cost ($)", style="red")
@@ -1220,6 +1249,8 @@ def display_token_usage():
 
     total_input = 0
     total_output = 0
+    total_cache_write = 0
+    total_cache_read = 0
     total_cost = 0
     total_context_tokens = 0
 
@@ -1235,10 +1266,14 @@ def display_token_usage():
 
         total_input += input_tokens
         total_output += output_tokens
+        total_cache_write += cache_write_tokens
+        total_cache_read += cache_read_tokens
 
         input_cost = (input_tokens / 1_000_000) * model_costs[model]["input"]
         output_cost = (output_tokens / 1_000_000) * model_costs[model]["output"]
-        model_cost = input_cost + output_cost
+        cache_write_cost = (cache_write_tokens / 1_000_000) * model_costs[model]["cache_write"]
+        cache_read_cost = (cache_read_tokens / 1_000_000) * model_costs[model]["cache_read"]
+        model_cost = input_cost + output_cost + cache_write_cost + cache_read_cost
         total_cost += model_cost
 
         if model_costs[model]["has_context"]:
@@ -1251,20 +1286,24 @@ def display_token_usage():
             model,
             f"{input_tokens:,}",
             f"{output_tokens:,}",
+            f"{cache_write_tokens:,}",
+            f"{cache_read_tokens:,}",
             f"{total_tokens:,}",
             f"{percentage:.2f}%" if model_costs[model]["has_context"] else "Doesn't save context",
             f"${model_cost:.3f}",
         )
 
-    grand_total = total_input + total_output
+    grand_total = total_input + total_output + total_cache_write + total_cache_read
     total_percentage = (total_context_tokens / MAX_CONTEXT_TOKENS) * 100
 
     table.add_row(
         "Total",
         f"{total_input:,}",
         f"{total_output:,}",
+        f"{total_cache_write:,}",
+        f"{total_cache_read:,}",
         f"{grand_total:,}",
-        "",  # Empty string for the "% of Context" column
+        f"{total_percentage:.2f}%",
         f"${total_cost:.3f}",
         style="bold",
     )
