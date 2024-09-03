@@ -17,7 +17,6 @@ import asyncio
 import aiohttp
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
-import difflib
 
 async def get_user_input(prompt="You: "):
     style = Style.from_dict({
@@ -254,7 +253,7 @@ def create_files(files):
             dir_name = os.path.dirname(path)
             if dir_name:
                 os.makedirs(dir_name, exist_ok=True)
-            with open(path, 'w') as f:
+            with open(path, 'w', encoding='utf-8') as f:
                 f.write(content)
             file_contents[path] = content
             results.append(f"File created and added to system prompt: {path}")
@@ -404,7 +403,7 @@ async def edit_and_apply_multiple(files, project_context, is_automode=False, max
         try:
             original_content = file_contents.get(path, "")
             if not original_content:
-                with open(path, 'r') as f:
+                with open(path, 'r', encoding='utf-8') as f:
                     original_content = f.read()
                 file_contents[path] = original_content
 
@@ -514,7 +513,7 @@ async def apply_edits(file_path, edit_instructions, original_content):
         console.print(Panel(message, style="green"))
     else:
         # Write the changes to the file
-        with open(file_path, 'w') as file:
+        with open(file_path, 'w', encoding='utf-8') as file:
             file.write(edited_content)
         message = f"Changes have been written to {file_path}"
         console_output.append(message)
@@ -549,7 +548,7 @@ async def execute_code(code, timeout=10):
     process_id = f"process_{len(running_processes)}"
     
     # Write the code to a temporary file
-    with open(f"{process_id}.py", "w") as f:
+    with open(f"{process_id}.py", "w", encoding='utf-8') as f:
         f.write(code)
     
     # Prepare the command to run the code
@@ -588,7 +587,7 @@ async def execute_code(code, timeout=10):
 def read_file(path):
     global file_contents
     try:
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
         file_contents[path] = content
         return f"File '{path}' has been read and stored in the system prompt."
@@ -600,7 +599,7 @@ def read_multiple_files(paths):
     results = []
     for path in paths:
         try:
-            with open(path, 'r') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 content = f.read()
             file_contents[path] = content
             results.append(f"File '{path}' has been read and stored in the system prompt.")

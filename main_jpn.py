@@ -17,6 +17,7 @@ import asyncio
 import aiohttp
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
+import difflib
 
 
 async def get_user_input(prompt="あなた: "):
@@ -259,9 +260,7 @@ def update_system_prompt(
             + chain_of_thought_prompt
         )
     else:
-        return (
-            BASE_SYSTEM_PROMPT + file_contents_prompt + "\n\n" + chain_of_thought_prompt
-        )
+        return BASE_SYSTEM_PROMPT + file_contents_prompt + "\n\n" + chain_of_thought_prompt
 
 
 def create_folder(path):
@@ -420,9 +419,7 @@ async def generate_edit_instructions(
         return edit_instructions
 
     except Exception as e:
-        console.print(
-            f"編集指示の生成中にエラーが発生しました: {str(e)}", style="bold red"
-        )
+        console.print(f"編集指示の生成中にエラーが発生しました: {str(e)}", style="bold red")
         return []  # 例外が発生した場合は空のリストを返す
 
 
@@ -446,9 +443,7 @@ def parse_search_replace_blocks(response_text):
     return json.dumps(blocks)  # JSON文字列を返し続ける
 
 
-async def edit_and_apply(
-    path, instructions, project_context, is_automode=False, max_retries=3
-):
+async def edit_and_apply(path, instructions, project_context, is_automode=False, max_retries=3):
     """
         特定の指示と詳細なプロジェクトコンテキストに基づいて、ファイルにAIを活用した改善を適用します。
         この関数は、ファイルを読み取り、会話履歴と包括的なコード関連プロジェクトコンテキストを使用して、AIでバッチ処理を行います。
@@ -482,9 +477,7 @@ async def edit_and_apply(
             )
 
             if edit_instructions_json:
-                edit_instructions = json.loads(
-                    edit_instructions_json
-                )  # ここでJSONを解析する
+                edit_instructions = json.loads(edit_instructions_json)  # ここでJSONを解析する
                 console.print(
                     Panel(
                         f"試行 {attempt + 1}/{max_retries}: 次のSEARCH/REPLACEブロックが生成されました:",
@@ -506,9 +499,7 @@ async def edit_and_apply(
                 )
 
                 if changes_made:
-                    file_contents[path] = (
-                        edited_content  # ファイルの内容を新しい内容で更新する
-                    )
+                    file_contents[path] = edited_content  # ファイルの内容を新しい内容で更新する
                     console.print(
                         Panel(
                             f"システムプロンプト内のファイルの内容が更新されました: {path}",
@@ -523,7 +514,9 @@ async def edit_and_apply(
                                 style="yellow",
                             )
                         )
-                        instructions += f"\n\n適用できなかった次の編集を再試行してください:\n{failed_edits}"
+                        instructions += (
+                            f"\n\n適用できなかった次の編集を再試行してください:\n{failed_edits}"
+                        )
                         original_content = edited_content
                         continue
 
@@ -569,9 +562,7 @@ async def apply_edits(file_path, edit_instructions, original_content):
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         console=console,
     ) as progress:
-        edit_task = progress.add_task(
-            "[cyan]編集を適用しています...", total=total_edits
-        )
+        edit_task = progress.add_task("[cyan]編集を適用しています...", total=total_edits)
 
         for i, edit in enumerate(edit_instructions, 1):
             search_content = edit["search"].strip()
@@ -585,13 +576,9 @@ async def apply_edits(file_path, edit_instructions, original_content):
                 # 元の空白を保持してコンテンツを置き換える
                 start, end = match.span()
                 # replace_contentから<SEARCH>と<REPLACE>タグを削除する
-                replace_content_cleaned = re.sub(
-                    r"</?SEARCH>|</?REPLACE>", "", replace_content
-                )
+                replace_content_cleaned = re.sub(r"</?SEARCH>|</?REPLACE>", "", replace_content)
                 edited_content = (
-                    edited_content[:start]
-                    + replace_content_cleaned
-                    + edited_content[end:]
+                    edited_content[:start] + replace_content_cleaned + edited_content[end:]
                 )
                 changes_made = True
 
@@ -752,13 +739,9 @@ def read_multiple_files(paths):
             with open(path, "r") as f:
                 content = f.read()
             file_contents[path] = content
-            results.append(
-                f"ファイル '{path}' が読み取られ、システムプロンプトに保存されました。"
-            )
+            results.append(f"ファイル '{path}' が読み取られ、システムプロンプトに保存されました。")
         except Exception as e:
-            results.append(
-                f"ファイル '{path}' の読み取り中にエラーが発生しました: {str(e)}"
-            )
+            results.append(f"ファイル '{path}' の読み取り中にエラーが発生しました: {str(e)}")
     return "\n".join(results)
 
 
@@ -1107,9 +1090,7 @@ async def send_to_ai_for_executing(code, execution_result):
         return analysis
 
     except Exception as e:
-        console.print(
-            f"AIコード実行分析中にエラーが発生しました: {str(e)}", style="bold red"
-        )
+        console.print(f"AIコード実行分析中にエラーが発生しました: {str(e)}", style="bold red")
         return f"「code_execution_env」からのコード実行の分析中にエラーが発生しました: {str(e)}"
 
 
@@ -1141,9 +1122,7 @@ def save_chat():
         elif message["role"] == "user" and isinstance(message["content"], list):
             for content in message["content"]:
                 if content["type"] == "tool_result":
-                    formatted_chat += (
-                        f"### ツールの結果\n\n```\n{content['content']}\n```\n\n"
-                    )
+                    formatted_chat += f"### ツールの結果\n\n```\n{content['content']}\n```\n\n"
 
     # ファイルに保存する
     with open(filename, "w", encoding="utf-8") as f:
@@ -1241,9 +1220,7 @@ async def chat_with_claude(
                 )
             ]
             if filtered_content:
-                filtered_conversation_history.append(
-                    {**message, "content": filtered_content}
-                )
+                filtered_conversation_history.append({**message, "content": filtered_content})
         else:
             filtered_conversation_history.append(message)
 
@@ -1274,18 +1251,12 @@ async def chat_with_claude(
                 )
             )
             time.sleep(5)
-            return await chat_with_claude(
-                user_input, image_path, current_iteration, max_iterations
-            )
+            return await chat_with_claude(user_input, image_path, current_iteration, max_iterations)
         else:
-            console.print(
-                Panel(f"APIエラー: {str(e)}", title="APIエラー", style="bold red")
-            )
+            console.print(Panel(f"APIエラー: {str(e)}", title="APIエラー", style="bold red"))
             return "AIとの通信中にエラーが発生しました。もう一度試してください。", False
     except APIError as e:
-        console.print(
-            Panel(f"APIエラー: {str(e)}", title="APIエラー", style="bold red")
-        )
+        console.print(Panel(f"APIエラー: {str(e)}", title="APIエラー", style="bold red"))
         return "AIとの通信中にエラーが発生しました。もう一度試してください。", False
 
     assistant_response = ""
@@ -1331,16 +1302,12 @@ async def chat_with_claude(
         tool_use_id = tool_use.id
 
         console.print(Panel(f"使用されたツール: {tool_name}", style="green"))
-        console.print(
-            Panel(f"ツールの入力: {json.dumps(tool_input, indent=2)}", style="green")
-        )
+        console.print(Panel(f"ツールの入力: {json.dumps(tool_input, indent=2)}", style="green"))
 
         tool_result = await execute_tool(tool_name, tool_input)
 
         if tool_result["is_error"]:
-            console.print(
-                Panel(tool_result["content"], title="ツールのエラー", style="bold red")
-            )
+            console.print(Panel(tool_result["content"], title="ツールのエラー", style="bold red"))
         else:
             console.print(
                 Panel(
@@ -1387,12 +1354,10 @@ async def chat_with_claude(
             if "path" in tool_input:
                 file_path = tool_input["path"]
                 if (
-                    "システムプロンプト内のファイルの内容が更新されました"
-                    in tool_result["content"]
+                    "システムプロンプト内のファイルの内容が更新されました" in tool_result["content"]
                     or "ファイルが作成され、システムプロンプトに追加されました"
                     in tool_result["content"]
-                    or "が読み取られ、システムプロンプトに保存されました"
-                    in tool_result["content"]
+                    or "が読み取られ、システムプロンプトに保存されました" in tool_result["content"]
                 ):
                     # file_contents辞書はツール関数で既に更新されています
                     pass
@@ -1433,13 +1398,9 @@ async def chat_with_claude(
             assistant_response += f"\n\n{error_message}"
 
     if assistant_response:
-        current_conversation.append(
-            {"role": "assistant", "content": assistant_response}
-        )
+        current_conversation.append({"role": "assistant", "content": assistant_response})
 
-    conversation_history = messages + [
-        {"role": "assistant", "content": assistant_response}
-    ]
+    conversation_history = messages + [{"role": "assistant", "content": assistant_response}]
 
     # 最後にトークン使用量を表示する
     display_token_usage()
@@ -1580,13 +1541,9 @@ async def main():
     )
     console.print("会話を終了するには「exit」と入力してください。")
     console.print("メッセージに画像を含めるには「image」と入力してください。")
-    console.print(
-        "特定の反復回数で自律モードに入るには「automode [回数]」と入力してください。"
-    )
+    console.print("特定の反復回数で自律モードに入るには「automode [回数]」と入力してください。")
     console.print("会話履歴をクリアするには「reset」と入力してください。")
-    console.print(
-        "会話をMarkdownファイルに保存するには「save chat」と入力してください。"
-    )
+    console.print("会話をMarkdownファイルに保存するには「save chat」と入力してください。")
     console.print(
         "自動モード中は、Ctrl+Cを押して自動モードを終了し、通常のチャットに戻ることができます。"
     )
@@ -1719,10 +1676,7 @@ async def main():
                         )
                     )
                     automode = False
-                    if (
-                        conversation_history
-                        and conversation_history[-1]["role"] == "user"
-                    ):
+                    if conversation_history and conversation_history[-1]["role"] == "user":
                         conversation_history.append(
                             {
                                 "role": "assistant",
