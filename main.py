@@ -38,6 +38,8 @@ import sys
 import signal
 import logging
 from typing import Tuple, Optional
+import mimetypes
+import mimetypes
 
 
 def setup_virtual_environment() -> Tuple[str, str]:
@@ -142,6 +144,7 @@ Available tools and their optimal use cases:
 6. read_multiple_files: Read the contents of one or more existing files at once. This tool now handles both single and multiple file reads. Use this when you need to examine or work with file contents.
 7. list_files: List all files and directories in a specified folder.
 8. tavily_search: Perform a web search using the Tavily API for up-to-date information.
+9. Scan project folders to turn them into an .md file for better context.
 
 Tool Usage Guidelines:
 - Always use the most appropriate tool for the task at hand.
@@ -252,13 +255,29 @@ def create_folder(path):
 
 def create_file(path, content=""):
     global file_contents
-    try:
-        with open(path, "w") as f:
-            f.write(content)
-        file_contents[path] = content
-        return f"File created and added to system prompt: {path}"
-    except Exception as e:
-        return f"Error creating file: {str(e)}"
+    results = []
+
+    # Ensure files is always a list
+    if not isinstance(files, list):
+        files = [files]
+
+    for file in files:
+        try:
+            path = file.get('path')
+            content = file.get('content')
+            if path is None or content is None:
+                results.append(f"Error: Missing 'path' or 'content' for file")
+                continue
+            dir_name = os.path.dirname(path)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+            with open(path, 'w') as f:
+                f.write(content)
+            file_contents[path] = content
+            results.append(f"File created and added to system prompt: {path}")
+        except Exception as e:
+            results.append(f"Error creating file: {str(e)}")
+    return "\n".join(results)
 
 
 def highlight_diff(diff_text):
@@ -377,75 +396,98 @@ def parse_search_replace_blocks(response_text, use_fuzzy=USE_FUZZY_SEARCH):
     matches = re.findall(pattern, response_text, re.DOTALL)
 
     for search, replace in matches:
-        blocks.append({"search": search.strip(), "replace": replace.strip()})
+        search = search.strip()
+        replace = replace.strip()
+        similarity = 1.0  # Default to exact match
 
-    return json.dumps(blocks)  # Keep returning JSON string
+        if use_fuzzy and search not in response_text:
+            # Implement fuzzy matching logic here
+            best_match = difflib.get_close_matches(search, [response_text], n=1, cutoff=0.6)
+            if best_match:
+                similarity = difflib.SequenceMatcher(None, search, best_match[0]).ratio()
+            else:
+                similarity = 0.0
+
+        blocks.append({
+            'search': search,
+            'replace': replace,
+            'similarity': similarity
+        })
+
+    return blocks
 
 
-async def edit_and_apply_multiple(files, project_context, is_automode=False, max_retries=3):
+async def edit_and_apply_multiple(files, project_context, is_automode=False):
     global file_contents
-    try:
-        original_content = file_contents.get(path, "")
-        if not original_content:
-            with open(path, "r") as file:
-                original_content = file.read()
-            file_contents[path] = original_content
+    results = []
+    console_outputs = []
 
-        for attempt in range(max_retries):
-            edit_instructions_json = await generate_edit_instructions(
-                path, original_content, instructions, project_context, file_contents
-            )
+    # Ensure files is always a list
+    if isinstance(files, dict):
+        files = [files]
 
-            if edit_instructions_json:
-                edit_instructions = json.loads(edit_instructions_json)  # Parse JSON here
-                console.print(
-                    Panel(
-                        f"Attempt {attempt + 1}/{max_retries}: The following SEARCH/REPLACE blocks have been generated:",
-                        title="Edit Instructions",
-                        style="cyan",
-                    )
-                )
+    for file in files:
+        path = file['path']
+        instructions = file['instructions']
+        try:
+            original_content = file_contents.get(path, "")
+            if not original_content:
+                with open(path, 'r') as f:
+                    original_content = f.read()
+                file_contents[path] = original_content
+
+            edit_instructions = await generate_edit_instructions(path, original_content, instructions, project_context, file_contents)
+
+            if edit_instructions:
+                console.print(Panel(f"File: {path}\nThe following SEARCH/REPLACE blocks have been generated:", title="Edit Instructions", style="cyan"))
                 for i, block in enumerate(edit_instructions, 1):
                     console.print(f"Block {i}:")
-                    console.print(
-                        Panel(
-                            f"SEARCH:\n{block['search']}\n\nREPLACE:\n{block['replace']}",
-                            expand=False,
-                        )
-                    )
+                    console.print(Panel(f"SEARCH:\n{block['search']}\n\nREPLACE:\n{block['replace']}\nSimilarity: {block['similarity']:.2f}", expand=False))
 
-                edited_content, changes_made, failed_edits = await apply_edits(
-                    path, edit_instructions, original_content
-                )
+                edited_content, changes_made, failed_edits, console_output = await apply_edits(path, edit_instructions, original_content)
+                console_outputs.append(console_output)
 
                 if changes_made:
-                    file_contents[path] = (
-                        edited_content  # Update the file_contents with the new content
-                    )
-                    console.print(
-                        Panel(f"File contents updated in system prompt: {path}", style="green")
-                    )
+                    file_contents[path] = edited_content
+                    console.print(Panel(f"File contents updated in system prompt: {path}", style="green"))
 
                     if failed_edits:
-                        console.print(
-                            Panel(f"Some edits could not be applied. Retrying...", style="yellow")
-                        )
-                        instructions += f"\n\nPlease retry the following edits that could not be applied:\n{failed_edits}"
-                        original_content = edited_content
-                        continue
-
-                    return f"Changes applied to {path}"
-                elif attempt == max_retries - 1:
-                    return f"No changes could be applied to {path} after {max_retries} attempts. Please review the edit instructions and try again."
+                        results.append({
+                            "path": path,
+                            "status": "partial_success",
+                            "message": f"Some changes applied to {path}, but some edits failed.",
+                            "failed_edits": failed_edits,
+                            "edited_content": edited_content
+                        })
+                    else:
+                        results.append({
+                            "path": path,
+                            "status": "success",
+                            "message": f"All changes successfully applied to {path}",
+                            "edited_content": edited_content
+                        })
                 else:
-                    console.print(
-                        Panel(
-                            f"No changes could be applied in attempt {attempt + 1}. Retrying...",
-                            style="yellow",
-                        )
-                    )
+                    results.append({
+                        "path": path,
+                        "status": "no_changes",
+                        "message": f"No changes could be applied to {path}. Please review the edit instructions and try again."
+                    })
             else:
-                return f"No changes suggested for {path}"
+                results.append({
+                    "path": path,
+                    "status": "no_instructions",
+                    "message": f"No edit instructions generated for {path}"
+                })
+        except Exception as e:
+            error_message = f"Error editing/applying to file {path}: {str(e)}"
+            results.append({
+                "path": path,
+                "status": "error",
+                "message": error_message
+            })
+            console_outputs.append(error_message)
+
+    return results, "\n".join(console_outputs)
 
         return f"Failed to apply changes to {path} after {max_retries} attempts."
     except Exception as e:
@@ -469,32 +511,38 @@ async def apply_edits(file_path, edit_instructions, original_content):
         edit_task = progress.add_task("[cyan]Applying edits...", total=total_edits)
 
         for i, edit in enumerate(edit_instructions, 1):
-            search_content = edit["search"].strip()
-            replace_content = edit["replace"].strip()
+            search_content = edit['search'].strip()
+            replace_content = edit['replace'].strip()
+            similarity = edit['similarity']
 
             # Use regex to find the content, ignoring leading/trailing whitespace
             pattern = re.compile(re.escape(search_content), re.DOTALL)
             match = pattern.search(edited_content)
 
-            if match:
-                # Replace the content, preserving the original whitespace
-                start, end = match.span()
-                # Strip <SEARCH> and <REPLACE> tags from replace_content
-                replace_content_cleaned = re.sub(r"</?SEARCH>|</?REPLACE>", "", replace_content)
-                edited_content = (
-                    edited_content[:start] + replace_content_cleaned + edited_content[end:]
-                )
-                changes_made = True
+            if match or (USE_FUZZY_SEARCH and similarity >= 0.8):
+                if not match:
+                    # If using fuzzy search and no exact match, find the best match
+                    best_match = difflib.get_close_matches(search_content, [edited_content], n=1, cutoff=0.6)
+                    if best_match:
+                        match = re.search(re.escape(best_match[0]), edited_content)
 
-                # Display the diff for this edit
-                diff_result = generate_diff(search_content, replace_content, file_path)
-                console.print(
-                    Panel(
-                        diff_result,
-                        title=f"Changes in {file_path} ({i}/{total_edits})",
-                        style="cyan",
-                    )
-                )
+                if match:
+                    # Replace the content, preserving the original whitespace
+                    start, end = match.span()
+                    # Strip <SEARCH> and <REPLACE> tags from replace_content
+                    replace_content_cleaned = re.sub(r'</?SEARCH>|</?REPLACE>', '', replace_content)
+                    edited_content = edited_content[:start] + replace_content_cleaned + edited_content[end:]
+                    changes_made = True
+
+                    # Display the diff for this edit
+                    diff_result = generate_diff(search_content, replace_content, file_path)
+                    console.print(Panel(diff_result, title=f"Changes in {file_path} ({i}/{total_edits}) - Similarity: {similarity:.2f}", style="cyan"))
+                    console_output.append(f"Edit {i}/{total_edits} applied successfully")
+                else:
+                    message = f"Edit {i}/{total_edits} not applied: content not found (Similarity: {similarity:.2f})"
+                    console_output.append(message)
+                    console.print(Panel(message, style="yellow"))
+                    failed_edits.append(f"Edit {i}: {search_content}")
             else:
                 console.print(
                     Panel(f"Edit {i}/{total_edits} not applied: content not found", style="yellow")
@@ -605,6 +653,8 @@ def read_multiple_files(paths):
     # Convert single path to list if necessary
     if isinstance(paths, str):
         paths = [paths]
+    elif paths is None:
+        return "Error: No file paths provided"
 
     for path in paths:
         try:
@@ -661,6 +711,24 @@ tools = [
             },
             "required": ["path"],
         },
+    },
+    {
+        "name": "scan_folder",
+        "description": "Scan a specified folder and create a Markdown file with the contents of all coding text files, excluding binary files and common ignored folders.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "folder_path": {
+                    "type": "string",
+                    "description": "The absolute or relative path of the folder to scan. Use forward slashes (/) for path separation, even on Windows systems."
+                },
+                "output_file": {
+                    "type": "string",
+                    "description": "The name of the output Markdown file to create with the scanned contents."
+                }
+            },
+            "required": ["folder_path", "output_file"]
+        }
     },
     {
         "name": "create_files",
@@ -789,6 +857,47 @@ tools = [
 ]
 
 from typing import Dict, Any
+import os
+import mimetypes
+import asyncio
+
+async def decide_retry(tool_checker_response, edit_results):
+    try:
+        response = client.messages.create(
+            model=TOOLCHECKERMODEL,
+            max_tokens=1000,
+            system="You are an AI assistant tasked with deciding whether to retry editing files based on the previous edit results and the AI's response. Respond with a JSON object containing 'retry' (boolean) and 'files_to_retry' (list of file paths).",
+            messages=[
+                {"role": "user", "content": f"Previous edit results: {json.dumps(edit_results)}\n\nAI's response: {tool_checker_response}\n\nDecide whether to retry editing any files."}
+            ]
+        )
+
+        # Extract the text content from the response
+        response_text = response.content[0].text.strip()
+
+        # Try to find a valid JSON object within the response
+        json_start = response_text.find('{')
+        json_end = response_text.rfind('}') + 1
+        if json_start != -1 and json_end != -1:
+            json_str = response_text[json_start:json_end]
+            decision = json.loads(json_str)
+        else:
+            # If no valid JSON found, make a decision based on the presence of "retry" in the response
+            decision = {
+                "retry": "retry" in response_text.lower(),
+                "files_to_retry": []
+            }
+
+        return {
+            "retry": decision.get("retry", False),
+            "files_to_retry": decision.get("files_to_retry", [])
+        }
+    except json.JSONDecodeError as e:
+        console.print(Panel(f"Error parsing JSON in decide_retry: {str(e)}", title="Error", style="bold red"))
+        return {"retry": False, "files_to_retry": []}
+    except Exception as e:
+        console.print(Panel(f"Error in decide_retry: {str(e)}", title="Error", style="bold red"))
+        return {"retry": False, "files_to_retry": []}
 
 
 async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
@@ -812,7 +921,11 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
             result = read_file(tool_input["path"])
         elif tool_name == "read_multiple_files":
             paths = tool_input.get("paths", tool_input.get("path"))
-            result = read_multiple_files(paths)
+            if paths is None:
+                result = "Error: No file paths provided"
+                is_error = True
+            else:
+                result = read_multiple_files(paths)
         elif tool_name == "list_files":
             result = list_files(tool_input.get("path", "."))
         elif tool_name == "tavily_search":
@@ -828,6 +941,8 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
             result = f"{execution_result}\n\nAnalysis:\n{analysis}"
             if process_id in running_processes:
                 result += "\n\nNote: The process is still running in the background."
+        elif tool_name == "scan_folder":
+            result = scan_folder(tool_input["folder_path"], tool_input["output_file"])
         else:
             is_error = True
             result = f"Unknown tool: {tool_name}"
@@ -843,6 +958,52 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
         logging.error(f"Error executing tool {tool_name}: {str(e)}")
         return {"content": f"Error executing tool {tool_name}: {str(e)}", "is_error": True}
 
+
+def scan_folder(folder_path: str, output_file: str) -> str:
+    ignored_folders = {'.git', '__pycache__', 'node_modules', 'venv', 'env'}
+    markdown_content = f"# Folder Scan: {folder_path}\n\n"
+    total_chars = len(markdown_content)
+    max_chars = 600000  # Approximating 150,000 tokens
+
+    for root, dirs, files in os.walk(folder_path):
+        dirs[:] = [d for d in dirs if d not in ignored_folders]
+
+        for file in files:
+            file_path = os.path.join(root, file)
+            relative_path = os.path.relpath(file_path, folder_path)
+
+            mime_type, _ = mimetypes.guess_type(file_path)
+            if mime_type and mime_type.startswith('text'):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+
+                    file_content = f"## {relative_path}\n\n```\n{content}\n```\n\n"
+                    if total_chars + len(file_content) > max_chars:
+                        remaining_chars = max_chars - total_chars
+                        if remaining_chars > 0:
+                            truncated_content = file_content[:remaining_chars]
+                            markdown_content += truncated_content
+                            markdown_content += "\n\n... Content truncated due to size limitations ...\n"
+                        else:
+                            markdown_content += "\n\n... Additional files omitted due to size limitations ...\n"
+                        break
+                    else:
+                        markdown_content += file_content
+                        total_chars += len(file_content)
+                except Exception as e:
+                    error_msg = f"## {relative_path}\n\nError reading file: {str(e)}\n\n"
+                    if total_chars + len(error_msg) <= max_chars:
+                        markdown_content += error_msg
+                        total_chars += len(error_msg)
+
+        if total_chars >= max_chars:
+            break
+
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(markdown_content)
+
+    return f"Folder scan complete. Markdown file created at: {output_file}. Total characters: {total_chars}"
 
 def encode_image_to_base64(image_path):
     try:
@@ -1102,18 +1263,17 @@ async def chat_with_claude(
         console.print(Panel(f"Tool Used: {tool_name}", style="green"))
         console.print(Panel(f"Tool Input: {json.dumps(tool_input, indent=2)}", style="green"))
 
-        tool_result = await execute_tool(tool_name, tool_input)
-
-        if tool_result["is_error"]:
-            console.print(
-                Panel(tool_result["content"], title="Tool Execution Error", style="bold red")
-            )
+        if tool_name == 'create_files':
+            tool_result = create_files(tool_input.get('files', [tool_input]))
         else:
-            console.print(
-                Panel(
-                    tool_result["content"], title_align="left", title="Tool Result", style="green"
-                )
-            )
+            tool_result = await execute_tool(tool_name, tool_input)
+
+        if isinstance(tool_result, dict) and tool_result.get("is_error"):
+            console.print(Panel(tool_result["content"], title="Tool Execution Error", style="bold red"))
+        else:
+            # Format the tool result content for proper rendering
+            formatted_result = json.dumps(tool_result, indent=2) if isinstance(tool_result, (dict, list)) else str(tool_result)
+            console.print(Panel(formatted_result, title_align="left", title="Tool Result", style="green"))
 
         current_conversation.append(
             {
@@ -1124,34 +1284,38 @@ async def chat_with_claude(
             }
         )
 
-        current_conversation.append(
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": tool_result["content"],
-                        "is_error": tool_result["is_error"],
-                    }
-                ],
-            }
-        )
+        # Modify this part to ensure correct structure
+        tool_result_content = {
+            "type": "text",
+            "text": json.dumps(tool_result) if isinstance(tool_result, (dict, list)) else str(tool_result)
+        }
+
+        current_conversation.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": [tool_result_content],  # Wrap the content in a list
+                    "is_error": tool_result.get("is_error", False) if isinstance(tool_result, dict) else False
+                }
+            ]
+        })
 
         # Update the file_contents dictionary if applicable
-        if (
-            tool_name in ["create_file", "edit_and_apply", "read_file"]
-            and not tool_result["is_error"]
-        ):
-            if "path" in tool_input:
-                file_path = tool_input["path"]
-                if (
-                    "File contents updated in system prompt" in tool_result["content"]
-                    or "File created and added to system prompt" in tool_result["content"]
-                    or "has been read and stored in the system prompt" in tool_result["content"]
-                ):
-                    # The file_contents dictionary is already updated in the tool function
-                    pass
+        if tool_name in ['create_files', 'edit_and_apply_multiple', 'read_multiple_files'] and not (isinstance(tool_result, dict) and tool_result.get("is_error")):
+            if tool_name == 'create_files':
+                for file in tool_input['files']:
+                    if "File created and added to system prompt" in str(tool_result):
+                        file_contents[file['path']] = file['content']
+            elif tool_name == 'edit_and_apply_multiple':
+                edit_results = tool_result if isinstance(tool_result, list) else [tool_result]
+                for result in edit_results:
+                    if isinstance(result, dict) and result.get("status") in ["success", "partial_success"]:
+                        file_contents[result["path"]] = result.get("edited_content", file_contents.get(result["path"], ""))
+            elif tool_name == 'read_multiple_files':
+                # The file_contents dictionary is already updated in the read_multiple_files function
+                pass
 
         messages = filtered_conversation_history + current_conversation
 
@@ -1183,6 +1347,19 @@ async def chat_with_claude(
                 )
             )
             assistant_response += "\n\n" + tool_checker_response
+
+            # If the tool was edit_and_apply_multiple, let the AI decide whether to retry
+            if tool_name == 'edit_and_apply_multiple':
+                retry_decision = await decide_retry(tool_checker_response, edit_results)
+                if retry_decision["retry"]:
+                    console.print(Panel(f"AI has decided to retry editing for files: {', '.join(retry_decision['files_to_retry'])}", style="yellow"))
+                    retry_files = [file for file in tool_input['files'] if file['path'] in retry_decision['files_to_retry']]
+                    retry_result, retry_console_output = await edit_and_apply_multiple(retry_files, tool_input['project_context'])
+                    console.print(Panel(retry_console_output, title="Retry Result", style="cyan"))
+                    assistant_response += f"\n\nRetry result: {json.dumps(retry_result, indent=2)}"
+                else:
+                    console.print(Panel("Clude has decided not to retry editing", style="green"))
+
         except APIError as e:
             error_message = f"Error in tool response: {str(e)}"
             console.print(Panel(error_message, title="Error", style="bold red"))
@@ -1396,13 +1573,21 @@ async def main():
                 user_input = await get_user_input()
 
                 iteration_count = 0
+                error_count = 0
+                max_errors = 3  # Maximum number of consecutive errors before exiting automode
                 try:
                     while automode and iteration_count < max_iterations:
-                        response, exit_continuation = await chat_with_claude(
-                            user_input,
-                            current_iteration=iteration_count + 1,
-                            max_iterations=max_iterations,
-                        )
+                        try:
+                            response, exit_continuation = await chat_with_claude(user_input, current_iteration=iteration_count+1, max_iterations=max_iterations)
+                            error_count = 0  # Reset error count on successful iteration
+                        except Exception as e:
+                            console.print(Panel(f"Error in automode iteration: {str(e)}", style="bold red"))
+                            error_count += 1
+                            if error_count >= max_errors:
+                                console.print(Panel(f"Exiting automode due to {max_errors} consecutive errors.", style="bold red"))
+                                automode = False
+                                break
+                            continue
 
                         if exit_continuation or CONTINUATION_EXIT_PHRASE in response:
                             console.print(
